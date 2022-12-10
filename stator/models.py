@@ -158,9 +158,11 @@ class StatorModel(models.Model):
         try:
             next_state = await current_state.handler(self)
         except BaseException as e:
-            await StatorError.acreate_from_instance(self, e)
-            await exceptions.acapture_exception(e)
-            traceback.print_exc()
+            next_state = await self.state_graph.transition_error(self, e)
+            if next_state is None:
+                await StatorError.acreate_from_instance(self, e)
+                await exceptions.acapture_exception(e)
+                traceback.print_exc()
         else:
             if next_state:
                 # Ensure it's a State object

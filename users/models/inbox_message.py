@@ -1,3 +1,5 @@
+from json import JSONDecodeError
+
 from asgiref.sync import sync_to_async
 from django.db import models
 
@@ -8,10 +10,27 @@ from stator.models import State, StateField, StateGraph, StatorModel
 class InboxMessageStates(StateGraph):
     received = State(try_interval=300)
     processed = State(try_interval=86400, attempt_immediately=False)
+    invalid = State(externally_progressed=True)  # DLQ
     purged = State()  # This is actually deletion, it will never get here
 
     received.transitions_to(processed)
+    received.transitions_to(invalid)
+    invalid.transitions_to(purged)
+    invalid.transitions_to(processed)  # DQL --> Retry
     processed.transitions_to(purged)
+
+    @classmethod
+    async def transition_error(cls, instance: "InboxMessage", exc: BaseException):
+        if isinstance(exc, JSONDecodeError):
+            return cls.invalid
+
+        if isinstance(exc, (KeyError, ValueError)) and instance.message_type in (
+            "announce",
+            "like",
+            "undo",
+            "delete",
+        ):
+            return cls.invalid
 
     @classmethod
     async def handle_received(cls, instance: "InboxMessage"):

@@ -1,5 +1,8 @@
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:
+    from .models import StatorModel
 
 
 class StateGraph:
@@ -76,6 +79,14 @@ class StateGraph:
         cls.automatic_states = automatic_states
         # Generate choices
         cls.choices = [(name, name) for name in cls.states.keys()]
+
+    @classmethod
+    async def transition_error(cls, instance: "StatorModel", exc: BaseException):
+        """
+        Graph handler for handling when a transition attempt errors. Returns target state
+        if handled, otherwise None.
+        """
+        pass
 
 
 class State:
