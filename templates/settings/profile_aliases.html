@@ -1,0 +1,30 @@
+{% extends "settings/base.html" %}
+
+{% block subtitle %}Profile Aliases{% endblock %}
+
+{% block content %}
+    <form action="." method="POST" enctype="multipart/form-data" >
+        {% csrf_token %}
+        <fieldset>
+            <legend>Add Alias</legend>
+            {% include "forms/_field.html" with field=form.handle %}
+        </fieldset>
+
+        {% if identity.also_known_as %}
+        <fieldset>
+            <legend>Current Aliases</legend>
+            {% for alias in identity.also_known_as %}
+            {% include "forms/_field.html" with field=form.aliases %}
+
+            <p>{{ alias }} <button name="delete-{{ forloop.counter }}" class="fa-solid fa-trash"></button></p>
+        {% endfor %}
+        </fieldset>
+        {% endif %}
+
+        <div class="buttons">
+            <a href="{{ request.identity.urls.view }}" class="button secondary left">View Profile</a>
+            <button>Save</button>
+        </div>
+    </form>
+
+{% endblock %}

@@ -189,6 +189,32 @@ class FanOutStates(StateGraph):
             case (FanOut.Types.identity_deleted, True):
                 pass
 
+            # Handle sending identity moved to remote
+            case (FanOut.Types.identity_moved, False):
+                identity = await fan_out.subject_identity.afetch_full()
+                try:
+                    await identity.signed_request(
+                        method="post",
+                        uri=fan_out.identity.inbox_uri,
+                        body=canonicalise(fan_out.subject_identity.to_move_ap()),
+                    )
+                except httpx.RequestError:
+                    return
+
+            # Handle sending identity moved to local
+            case (FanOut.Types.identity_moved, True):
+                subject_identity = await fan_out.subject_identity.afetch_full()
+
+                # subject_identity.local -> subject_identity.moved_to.local
+                # moves are handled by IdentityStates.moved without fanout
+
+                if not subject_identity.local:
+                    # 1. fetch subject_identity following
+                    # 2. fanout requests to follow each on behalf of subject_identity
+                    # 3. fetch subject_identity followers
+                    # 4. fanout requests to move followers from subject_identity
+                    pass
+
             case _:
                 raise ValueError(
                     f"Cannot fan out with type {fan_out.type} local={fan_out.identity.local}"
@@ -210,6 +236,7 @@ class FanOut(StatorModel):
         undo_interaction = "undo_interaction"
         identity_edited = "identity_edited"
         identity_deleted = "identity_deleted"
+        identity_moved = "identity_moved"
 
     state = StateField(FanOutStates)
 

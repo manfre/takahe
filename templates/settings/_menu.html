@@ -1,8 +1,13 @@
 <nav>
     <h3>Identity</h3>
-    <a href="{% url "settings_profile" %}" {% if section == "profile" %}class="selected"{% endif %} title="Profile">
+    <a href="{% url "settings_profile" %}" {% if section == "profile" and not sub_section %}class="selected"{% endif %} title="Profile">
         <i class="fa-solid fa-user"></i> Profile
     </a>
+    {% if section == "profile" %}
+    <a href="{% url "settings_profile_aliases" %}" {% if sub_section == "profile-aliases" %}class="selected"{% endif %} title="Profile Aliases">
+        <i class="fa-solid fa-users"></i> Profile Aliases
+    </a>
+    {% endif %}
     <a href="{% url "settings_interface" %}" {% if section == "interface" %}class="selected"{% endif %} title="Interface">
         <i class="fa-solid fa-display"></i> Interface
     </a>

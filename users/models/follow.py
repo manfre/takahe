@@ -96,6 +96,49 @@ class FollowStates(StateGraph):
         return cls.undone_remotely
 
 
+class FollowQuerySet(models.QuerySet):
+    def followed_by(self, identity, *, local: bool | None = None):
+        if local is None:
+            return self.filter(source=identity)
+        else:
+            return self.filter(source=identity, source__local=local)
+
+    def following(self, identity, *, local: bool | None = None):
+        if local is None:
+            return self.filter(target=identity)
+        else:
+            return self.filter(target=identity, target__local=local)
+
+    def follow_has(self, identity, *, local: bool | None = None):
+        if local is None:
+            return self.filter(models.Q(source=identity) | models.Q(target=identity))
+        else:
+            return self.filter(
+                models.Q(source=identity, source__local=local)
+                | models.Q(target=identity, target__local=local)
+            )
+
+    def active(self):
+        return self.filter(state__in=FollowStates.group_active())
+
+
+class FollowManager(models.Manager):
+    def get_queryset(self):
+        return FollowQuerySet(self.model, using=self._db)
+
+    def followed_by(self, identity):
+        return self.get_queryset().followed_by(identity)
+
+    def following(self, identity):
+        return self.get_queryset().following(identity)
+
+    def follow_has(self, identity):
+        return self.get_queryset().follow_has(identity)
+
+    def active(self):
+        return self.get_queryset().active()
+
+
 class Follow(StatorModel):
     """
     When one user (the source) follows other (the target)
@@ -125,6 +168,8 @@ class Follow(StatorModel):
 
     def __str__(self):
         return f"#{self.id}: {self.source} → {self.target}"
+
+    objects = FollowManager()
 
     ### Alternate fetchers/constructors ###
 

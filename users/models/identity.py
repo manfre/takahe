@@ -11,13 +11,14 @@ from django.utils import timezone
 from django.utils.functional import lazy
 from lxml import etree
 
-from core.exceptions import ActorMismatchError
+from core.exceptions import ActorMismatchError, capture_message
 from core.html import ContentRenderer, strip_html
 from core.ld import (
     canonicalise,
     format_ld_date,
     get_first_image_url,
     get_list,
+    get_str_or_id,
     media_type_from_filename,
 )
 from core.models import Config
@@ -47,9 +48,16 @@ class IdentityStates(StateGraph):
 
     deleted.transitions_to(deleted_fanned_out)
 
+    moved = State(try_interval=300, attempt_immediately=True)
+    moved_fanned_out = State(try_interval=300, attempt_immediately=True)
+    moved.transitions_to(moved_fanned_out)
+
     edited.transitions_to(updated)
     updated.transitions_to(edited)
+
     edited.transitions_to(deleted)
+    updated.transitions_to(moved)
+    moved.transitions_to(updated)
 
     outdated.transitions_to(updated)
     updated.transitions_to(outdated)
@@ -59,15 +67,19 @@ class IdentityStates(StateGraph):
         return [cls.deleted, cls.deleted_fanned_out]
 
     @classmethod
-    async def targets_fan_out(cls, identity: "Identity", type_: str) -> None:
+    async def targets_fan_out(
+        cls, identity: "Identity", type_: str, *, target_local: bool | None = False
+    ) -> None:
         from activities.models import FanOut
         from users.models import Follow
 
+        query = Follow.objects.select_related("source", "target").following(
+            identity, local=target_local
+        )
+
         # Fan out to each target
         shared_inboxes = set()
-        async for follower in Follow.objects.select_related("source", "target").filter(
-            target=identity
-        ):
+        async for follower in query:
             # Dedupe shared_inbox_uri
             shared_uri = follower.source.shared_inbox_uri
             if shared_uri and shared_uri in shared_inboxes:
@@ -79,6 +91,10 @@ class IdentityStates(StateGraph):
                 subject_identity=identity,
             )
             shared_inboxes.add(shared_uri)
+
+        print(
+            f"Identity.{type_} fannout for {identity} to {len(shared_inboxes)} targets"
+        )
 
     @classmethod
     async def handle_edited(cls, instance: "Identity"):
@@ -101,6 +117,24 @@ class IdentityStates(StateGraph):
         identity = await instance.afetch_full()
         await cls.targets_fan_out(identity, FanOut.Types.identity_deleted)
         return cls.deleted_fanned_out
+
+    @classmethod
+    async def handle_moved(cls, instance: "Identity"):
+        from activities.models import FanOut
+        from users.services import IdentityService
+
+        # Special case: target -> source remains local
+        # Fast update local followers
+        identity = await instance.afetch_full()
+        if identity.local and identity.moved_to.local:
+            await sync_to_async(
+                IdentityService(identity.moved_to).move_local_follows_from
+            )(identity)
+
+        # Now start the fanout to the fediverse
+        await cls.targets_fan_out(identity, FanOut.Types.identity_moved)
+
+        return cls.moved_fanned_out
 
     @classmethod
     async def handle_outdated(cls, identity: "Identity"):
@@ -166,6 +200,21 @@ class Identity(StatorModel):
         on_delete=models.PROTECT,
         related_name="identities",
     )
+
+    # List of str uri of other accounts
+    also_known_as = models.JSONField(null=True, blank=True)
+
+    moved_to = models.ForeignKey(
+        "users.Identity",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        limit_choices_to=(
+            models.Q(actor_type="person") & models.Q(also_known_as__isnull=False)
+        ),
+        related_name="moved_from_identities",
+    )
+    move_to_redirect = models.BooleanField(null=True, default=False)
 
     name = models.CharField(max_length=500, blank=True, null=True)
     summary = models.TextField(blank=True, null=True)
@@ -257,8 +306,8 @@ class Identity(StatorModel):
         if not self.local:
             return [self.profile_uri]
         return [
-            f"https://{self.domain.uri_domain}/@{self.username}/",
             f"https://{self.domain.uri_domain}/@{self.username}@{self.domain_id}/",
+            f"https://{self.domain.uri_domain}/@{self.username}/",
         ]
 
     def local_icon_url(self) -> RelativeAbsoluteUrl:
@@ -266,7 +315,7 @@ class Identity(StatorModel):
         Returns an icon for use by us, with fallbacks to a placeholder
         """
         if self.icon:
-            return RelativeAbsoluteUrl(self.icon.url)
+            return AutoAbsoluteUrl(self.icon.url)
         elif self.icon_uri:
             return AutoAbsoluteUrl(f"/proxy/identity_icon/{self.pk}/")
         else:
@@ -347,6 +396,22 @@ class Identity(StatorModel):
         try:
             return cls.objects.get(actor_uri=uri)
         except cls.DoesNotExist:
+            # TODO: PR Review focus on Security Implications
+            try:
+                # Try finding it by their alias
+                matches = list(
+                    cls.objects.filter(also_known_as__contains=uri).order_by(
+                        "local", "-created"
+                    )
+                )
+                if matches:
+                    capture_message(
+                        f"by_actor_uri fallback to also_known_as found {len(matches)} matches: {matches}"
+                    )
+                    if len(matches) == 1:
+                        return matches[0]
+            except IndexError:
+                pass
             if create:
                 if transient:
                     # Some code (like inbox fetching) doesn't need this saved
@@ -410,12 +475,18 @@ class Identity(StatorModel):
         """
         Returns a version of the object with all relations pre-loaded
         """
-        return await Identity.objects.select_related("domain").aget(pk=self.pk)
+        return await Identity.objects.select_related(
+            "domain", "moved_to", "moved_to__domain"
+        ).aget(pk=self.pk)
 
-    ### ActivityPub (outbound) ###
+    ### Webfinger (outbound) ###
 
     def to_webfinger(self):
         aliases = [self.absolute_profile_uri()]
+
+        # TODO: Should this filter down to only local domains?
+        # if self.also_known_as:
+        #     aliases.extend(self.also_known_as)
 
         actor_links = []
 
@@ -446,6 +517,8 @@ class Identity(StatorModel):
             "aliases": aliases,
             "links": actor_links,
         }
+
+    ### ActivityPub (outbound) ###
 
     def to_ap(self):
         response = {
@@ -483,6 +556,10 @@ class Identity(StatorModel):
             response["endpoints"] = {
                 "sharedInbox": f"https://{self.domain.uri_domain}/inbox/",
             }
+        if self.also_known_as:
+            response["alsoKnownAs"] = [aka for aka in self.also_known_as]
+        if self.moved_to:
+            response["movedTo"] = self.moved_to.actor_uri
         return response
 
     def to_ap_tag(self):
@@ -502,7 +579,7 @@ class Identity(StatorModel):
         object = self.to_ap()
         return {
             "type": "Update",
-            "id": self.actor_uri + "#update",
+            "id": self.actor_uri + "#update/{time():0.f}",
             "actor": self.actor_uri,
             "object": object,
         }
@@ -514,9 +591,23 @@ class Identity(StatorModel):
         object = self.to_ap()
         return {
             "type": "Delete",
-            "id": self.actor_uri + "#delete",
+            "id": self.actor_uri + "#delete/{time():0.f}",
             "actor": self.actor_uri,
             "object": object,
+        }
+
+    def to_move_ap(self):
+        """
+        Returns the AP JSON to move this identity to a different identity.
+        """
+        if not self.moved_to or not self.moved_to.actor_uri:
+            raise ValueError("Identity is not configured to move")
+        return {
+            "id": self.actor_uri + "#move/{time():0.f}",
+            "type": "Move",
+            "actor": self.actor_uri,
+            "object": self.actor_uri,
+            "target": self.moved_to.actor_uri,
         }
 
     ### ActivityPub (inbound) ###
@@ -551,6 +642,52 @@ class Identity(StatorModel):
             actor.delete()
         except cls.DoesNotExist:
             pass
+
+    @classmethod
+    def handle_move_ap(cls, data):
+        """
+        Takes an incoming move.person message and fetches the source and target.
+        """
+        from ..services import IdentityService
+        from . import Follow
+
+        actor_uri = data["actor"]
+        # Assert that the actor matches the object
+        if actor_uri != data["object"]:
+            raise ActorMismatchError(
+                f"Actor {data['actor']} trying to move identity {data['object']}"
+            )
+
+        # Find by actor
+        try:
+            actor = cls.by_actor_uri(actor_uri)
+        except cls.DoesNotExist:
+            # Actor might already be gone or we've never seen it before
+            return
+
+        # Find the target
+        try:
+            target = cls.by_actor_uri(data["target"])
+        except cls.DoesNotExist:
+            # Can't find the target, ignore it
+            return
+
+        target_service = IdentityService(target)
+        # Find all the local Identities that are following the old actor
+        # local -> actor
+        for follow in Follow.objects.select_related("source", "source__domain").filter(
+            source__local=True, target=actor
+        ):
+            target_service.follow_from(follow.source)
+
+        # Find all the local identities that are followed by the old actor
+        # actor -> local
+        for follow in Follow.objects.select_related("target", "target__domain").filter(
+            target__local=True, source=actor
+        ):
+            srv = IdentityService(follow.target)
+            srv.unfollow_from(actor)
+            srv.follow_from(target)
 
     ### Actor/Webfinger fetching ###
 
@@ -662,6 +799,21 @@ class Identity(StatorModel):
         document = canonicalise(response.json(), include_security=True)
         if "type" not in document:
             return False
+        # Look for a change in actor_uri, try to adjust ours if it's safe to do so
+        orig_actor_uri = self.actor_uri
+        new_actor_uri = document.get("id")
+        if new_actor_uri and new_actor_uri != orig_actor_uri:
+            try:
+                await sync_to_async(Identity.by_actor_uri)(new_actor_uri)
+            except Identity.DoesNotExist:
+                capture_message(
+                    f"actor_uri mismatch in fetch_actor (no conflict). DB has '{orig_actor_uri}', fetch returned '{new_actor_uri}'"
+                )
+            else:
+                capture_message(
+                    f"actor_uri mismatch in fetch_actor (with conflict). DB has '{orig_actor_uri}', fetch returned '{new_actor_uri}'"
+                )
+
         self.name = document.get("name")
         self.profile_uri = document.get("url")
         self.inbox_uri = document.get("inbox")
@@ -685,6 +837,19 @@ class Identity(StatorModel):
         self.icon_uri = get_first_image_url(document.get("icon", None))
         self.image_uri = get_first_image_url(document.get("image", None))
         self.discoverable = document.get("toot:discoverable", True)
+        self.also_known_as = [
+            id_
+            for id_ in [get_str_or_id(aka) for aka in get_list(document, "alsoKnownAs")]
+            if id_
+        ] or None
+
+        moved_to_uri = get_str_or_id(document.get("movedTo"))
+        self.moved_to = (
+            await sync_to_async(Identity.by_actor_uri)(moved_to_uri, create=True)
+            if moved_to_uri
+            else None
+        )
+
         # Profile links/metadata
         self.metadata = []
         for attachment in get_list(document, "attachment"):

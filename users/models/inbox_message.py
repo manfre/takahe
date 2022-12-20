@@ -116,6 +116,22 @@ class InboxMessageStates(StateGraph):
             case "flag":
                 # Received reports
                 await sync_to_async(Report.handle_ap)(instance.message)
+
+            case "move":
+                match instance.message_object_type:
+                    case "person":
+                        await sync_to_async(Identity.handle_move_ap)(instance.message)
+                    case None:
+                        if instance.message_actor == instance.message["object"]:
+                            # It's a person
+                            await sync_to_async(Identity.handle_move_ap)(
+                                instance.message
+                            )
+                    case unknown:
+                        raise ValueError(
+                            f"Cannot handle activity of type move.{unknown}"
+                        )
+
             case unknown:
                 raise ValueError(f"Cannot handle activity of type {unknown}")
         return cls.processed

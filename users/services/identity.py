@@ -51,6 +51,51 @@ class IdentityService:
         if existing_follow:
             existing_follow.transition_perform(FollowStates.undone)
 
+    def move_local_follows_from(self, from_identity: Identity):
+        """
+        Move all of the (local -> local) Follows from from_identity.
+        """
+        from_local_follows = Follow.objects.select_related(
+            "source",
+            "source__domain",
+            "target",
+            "target__domain",
+        ).filter(
+            models.Q(source=from_identity, source__local=True)
+            | models.Q(target=from_identity, target__local=True),
+        )
+        existing_target_follows = Follow.objects.filter(
+            models.Q(source=self.identity, source__local=True)
+            | models.Q(target=self.identity, target__local=True),
+        )
+        existing_targets = {x.target_id for x in existing_target_follows}
+        existing_sources = {x.source_id for x in existing_target_follows}
+
+        dupes = []
+
+        for follow in from_local_follows:
+            # Following other
+            if follow.source == from_identity:
+                if self.identity.id in existing_sources:
+                    dupes.append(follow)
+                else:
+                    follow.source = self.identity
+                    follow.uri = self.identity.actor_uri + f"follow/{follow.pk}/"
+            # Followd by other
+            elif follow.target == from_identity:
+                if self.identity.id in existing_targets:
+                    dupes.append(follow)
+                else:
+                    follow.target = self.identity
+
+        # In-place move the follow record to the self identity
+        Follow.objects.bulk_update(
+            from_local_follows, fields=["source", "uri", "target"], batch_size=1000
+        )
+
+        # Remove the follows from the from_identity that the target already had
+        Follow.objects.filter(pk__in=[x.id for x in dupes]).delete()
+
     def mastodon_json_relationship(self, from_identity: Identity):
         """
         Returns a Relationship object for the from_identity's relationship

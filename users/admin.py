@@ -40,9 +40,9 @@ class UserEventAdmin(admin.ModelAdmin):
 class IdentityAdmin(admin.ModelAdmin):
     list_display = ["id", "handle", "actor_uri", "state", "local"]
     list_filter = ("local", "state", "discoverable")
-    raw_id_fields = ["users"]
-    actions = ["force_update"]
-    readonly_fields = ["handle", "actor_json"]
+    raw_id_fields = ["users", "moved_to"]
+    actions = ["force_state_outdated", "force_state_edited", "force_state_moved"]
+    readonly_fields = ["handle", "actor_json", "webfinger_json"]
     search_fields = ["search_handle", "search_service_handle", "name", "id"]
 
     def get_search_results(self, request, queryset, search_term):
@@ -56,14 +56,28 @@ class IdentityAdmin(admin.ModelAdmin):
         )
         return super().get_search_results(request, queryset, search_term)
 
-    @admin.action(description="Force Update")
-    def force_update(self, request, queryset):
+    @admin.action(description="Force State: outdated")
+    def force_state_outdated(self, request, queryset):
         for instance in queryset:
             instance.transition_perform("outdated")
+
+    @admin.action(description="Force State: edited")
+    def force_state_edited(self, request, queryset):
+        for instance in queryset:
+            instance.transition_perform("edited")
+
+    @admin.action(description="Force State: moved")
+    def force_state_moved(self, request, queryset):
+        for instance in queryset:
+            instance.transition_perform("moved")
 
     @admin.display(description="ActivityPub JSON")
     def actor_json(self, instance):
         return instance.to_ap()
+
+    @admin.display(description="Webfinger JSON")
+    def webfinger_json(self, instance):
+        return instance.to_webfinger()
 
     def has_add_permission(self, request, obj=None):
         return False

@@ -10,7 +10,11 @@ from users.views.admin.domains import (  # noqa
 )
 from users.views.admin.federation import FederationEdit, FederationRoot  # noqa
 from users.views.admin.hashtags import HashtagEdit, Hashtags  # noqa
-from users.views.admin.identities import IdentitiesRoot, IdentityEdit  # noqa
+from users.views.admin.identities import (  # noqa
+    IdentitiesRoot,
+    IdentityEdit,
+    IdentityLocalMove,
+)
 from users.views.admin.invites import InviteCreate, InvitesRoot, InviteView  # noqa
 from users.views.admin.reports import ReportsRoot, ReportView  # noqa
 from users.views.admin.settings import (  # noqa

@@ -424,6 +424,8 @@ def canonicalise(json_data: dict, include_security: bool = False) -> dict:
             "Emoji": "toot:Emoji",
             "focalPoint": {"@container": "@list", "@id": "toot:focalPoint"},
             "Hashtag": "as:Hashtag",
+            "alsoKnownAs": "as:alsoKnownAs",
+            "movedTo": "as:movedTo",
             "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
             "Public": "as:Public",
             "sensitive": "as:sensitive",
@@ -442,7 +444,8 @@ def canonicalise(json_data: dict, include_security: bool = False) -> dict:
 def get_list(container, key) -> list:
     """
     Given a JSON-LD value (that can be either a list, or a dict if it's just
-    one item), always returns a list"""
+    one item), always returns a list
+    """
     if key not in container:
         return []
     value = container[key]

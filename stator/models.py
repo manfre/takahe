@@ -202,7 +202,7 @@ class StatorModel(models.Model):
         )
         return None
 
-    def transition_perform(self, state: State | str):
+    def transition_perform(self, state: State | str, *, db_update: bool = True):
         """
         Transitions the instance to the given state name, forcibly.
         """
@@ -210,23 +210,25 @@ class StatorModel(models.Model):
             state = state.name
         if state not in self.state_graph.states:
             raise ValueError(f"Invalid state {state}")
+
+        state_kwargs = {
+            "state": state,
+            "state_changed": timezone.now(),
+            "state_locked_until": None,
+            "state_attempted": None,
+            "state_ready": True,
+        }
         # See if it's ready immediately (if not, delay until first try_interval)
-        if self.state_graph.states[state].attempt_immediately:
-            self.__class__.objects.filter(pk=self.pk).update(
-                state=state,
-                state_changed=timezone.now(),
-                state_attempted=None,
-                state_locked_until=None,
-                state_ready=True,
+        if not self.state_graph.states[state].attempt_immediately:
+            state_kwargs.update(
+                {"state_attempted": timezone.now(), "state_ready": False}
             )
+
+        if db_update:
+            self.__class__.objects.filter(pk=self.pk).update(**state_kwargs)
         else:
-            self.__class__.objects.filter(pk=self.pk).update(
-                state=state,
-                state_changed=timezone.now(),
-                state_attempted=timezone.now(),
-                state_locked_until=None,
-                state_ready=False,
-            )
+            for field, value in state_kwargs.items():
+                setattr(self, field, value)
 
     atransition_perform = sync_to_async(transition_perform)
 

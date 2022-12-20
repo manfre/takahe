@@ -42,6 +42,11 @@ urlpatterns = [
         name="settings_profile",
     ),
     path(
+        "settings/profile/aliases/",
+        settings.ProfileAliasesPage.as_view(),
+        name="settings_profile_aliases",
+    ),
+    path(
         "settings/interface/",
         settings.InterfacePage.as_view(),
         name="settings_interface",
@@ -115,6 +120,11 @@ urlpatterns = [
         name="admin_identity_edit",
     ),
     path(
+        "admin/identities/<id>/move/",
+        admin.IdentityLocalMove.as_view(),
+        name="admin_identity_move",
+    ),
+    path(
         "admin/reports/",
         admin.ReportsRoot.as_view(),
         name="admin_reports",
@@ -162,6 +172,10 @@ urlpatterns = [
     path("@<handle>/report/", report.SubmitReport.as_view()),
     path("@<handle>/following/", identity.IdentityFollows.as_view(inbound=False)),
     path("@<handle>/followers/", identity.IdentityFollows.as_view(inbound=True)),
+    re_path(
+        r"^users?/(?P<handle>[a-zA-Z0-9_-].*)/?$",
+        identity.ViewIdentityAlt.as_view(),
+    ),
     # Posts
     path("compose/", compose.Compose.as_view(), name="compose"),
     path(

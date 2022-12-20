@@ -264,6 +264,7 @@ class Migration(migrations.Migration):
                             ("undo_interaction", "Undo Interaction"),
                             ("identity_edited", "Identity Edited"),
                             ("identity_deleted", "Identity Deleted"),
+                            ("identity_moved", "Identity Moved"),
                         ],
                         max_length=100,
                     ),
